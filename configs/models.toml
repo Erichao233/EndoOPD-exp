@@ -1,0 +1,24 @@
+# Checkpoints are staged outside the sandbox by tools/fetch_models.py under
+# <models-root>/<dir>, each with a REVISION file holding the resolved commit.
+# All share the qwen3_5 architecture and the 248,320-token vocabulary.
+# Roles: the student is compared against every other model in the suite.
+
+[models.qwen35_2b]
+repo = "Qwen/Qwen3.5-2B"
+dir = "Qwen3.5-2B"
+role = "student"
+
+[models.qwen35_27b]
+repo = "Qwen/Qwen3.5-27B"
+dir = "Qwen3.5-27B"
+role = "teacher"
+
+[models.qwen38_27b]
+repo = "Qwen/Qwen3.8-27B"
+dir = "Qwen3.8-27B"
+role = "teacher"
+
+[models.qwen35_9b]
+repo = "Qwen/Qwen3.5-9B"
+dir = "Qwen3.5-9B"
+role = "scale"

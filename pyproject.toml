@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "endoexp"
+version = "0.1.0"
+description = "Zero-training measurements for on-policy distillation in GI endoscopy"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+dependencies = ["numpy", "Pillow"]
+
+[project.optional-dependencies]
+gpu = ["torch", "transformers", "accelerate", "vllm"]
+tools = ["huggingface_hub", "pyarrow"]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["endoexp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

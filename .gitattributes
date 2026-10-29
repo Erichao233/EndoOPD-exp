@@ -1,0 +1,2 @@
+# Let `git archive` write the commit hash into the source bundle.
+endoexp/_commit.py export-subst

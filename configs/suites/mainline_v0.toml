@@ -1,0 +1,63 @@
+# Mainline v0: the cheapest measurements that decide which teacher route to take.
+#
+#   1. Does the 27B teacher see endoscopy better than the 2B student, beyond
+#      what the question alone or another image gives?            (E1)
+#   2. Does a privileged view (marked lesion, closer crop) help?    (E2)
+#   3. Do burned-in overlays drive the answers?                     (E4)
+#   4. Is the student's deficit in its visual tokens or in reading them? (E3)
+#
+# Units run in priority order; each vllm unit is split into one shard per GPU.
+
+name = "mainline_v0"
+description = "E1/E2/E4 for Qwen3.5-2B vs 27B (and Qwen3.8-27B), E3 probes, runtime checks"
+seed = 20261029
+sources = ["kvasir_vqa", "hyperkvasir", "hyperkvasir_seg"]
+max_pixels = 409600          # at most 400 visual tokens per image
+checks = ["tokenizers", "nccl"]
+
+[caps]
+e1_per_source_field = 1000   # test items per (source, field)
+e2_samples = 400             # polyp images with masks
+e4_per_view = 300            # images per manipulation
+report_samples = 300         # structured findings generated
+feature_samples = 3000       # dev + test images for probes
+parity_items = 64            # HF vs vLLM
+
+[pilot]
+items_per_experiment = 16
+limit_per_source = 300
+task_timeout_minutes = 8
+
+[[units]]
+model = "qwen35_2b"
+engine = "vllm"
+experiments = ["e1", "e2", "e4", "report"]
+priority = 1
+pilot = true
+
+[[units]]
+model = "qwen35_27b"
+engine = "vllm"
+experiments = ["e1", "e2", "e4", "report"]
+priority = 2
+
+[[units]]
+model = "qwen35_2b"
+engine = "hf"
+experiments = ["features", "parity"]
+priority = 3
+pilot = true
+shards = 1
+
+[[units]]
+model = "qwen38_27b"
+engine = "vllm"
+experiments = ["e1", "e2"]
+priority = 4
+
+[[units]]
+model = "qwen35_27b"
+engine = "hf"
+experiments = ["features"]
+priority = 5
+shards = 1
