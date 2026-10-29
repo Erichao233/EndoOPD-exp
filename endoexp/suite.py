@@ -253,8 +253,8 @@ def run(suite_path, models_path, data_root, models_root, out, pilot: bool = Fals
             log.error("analysis error:\n%s", summary["errors"][-1])
             analysis.write_minimal(out, summary)
     model_tasks = [t for t in tasks if t.spec.get("kind") == "model"]
-    if pilot:
-        ok = setup_ok and not summary["errors"] and all(t.status == "done" for t in tasks)
+    if pilot:  # the pilot gates the full run, so it must pass the acceptance checks
+        ok = setup_ok and summary.get("acceptance", {}).get("ok", False)
     else:
         ok = setup_ok and any(t.status == "done" for t in model_tasks)
     log.info("finished: %s", "ok" if ok else "FAILED")

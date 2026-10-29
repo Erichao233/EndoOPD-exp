@@ -3,7 +3,7 @@
 import json
 
 from endoexp import suite
-from endoexp.cli import main
+from endoexp.cli import DELIVERABLES, main
 from endoexp.io import read_json, read_jsonl
 
 
@@ -12,11 +12,14 @@ def test_full_suite_with_fake_engine(data_root, repo_root, tmp_path):
     code = suite.run(repo_root / "configs/suites/mainline_v0.toml", repo_root / "configs/models.toml",
                      data_root, tmp_path / "models", out, engine="fake", gpus=2)
     assert code == 0
-    for name in ("results/summary.json", "results/report.md", "results/items.jsonl.gz",
-                 "results/env.json", "logs/suite.log"):
+    for name in DELIVERABLES:
         assert (out / name).is_file(), name
     summary = read_json(out / "results/summary.json")
     assert summary["tasks"] and all(t["status"] == "done" for t in summary["tasks"])
+    assert summary["acceptance"]["ok"] and summary["acceptance"]["parity_ok"]
+    digest = (out / "results/digest.md").read_text()
+    assert "**Acceptance: PASS**" in digest and "## E1 teacher minus student" in digest
+    assert len(digest) < 20000
     shards = [t for t in summary["tasks"] if "qwen35_27b-fake" in t["id"]]
     assert len(shards) == 3                        # two vllm shards + one hf shard
     tables = summary["tables"]
@@ -47,8 +50,10 @@ def test_failures_are_recorded_and_deliverables_still_written(data_root, repo_ro
                      tmp_path / "missing-data", tmp_path / "models", out, engine="fake", gpus=1)
     assert code == 1
     summary = read_json(out / "results/summary.json")
-    assert summary["errors"]
-    assert (out / "results/report.md").is_file() and (out / "results/items.jsonl.gz").is_file()
+    assert summary["errors"] and not summary["acceptance"]["ok"]
+    for name in DELIVERABLES:
+        assert (out / name).is_file(), name
+    assert "**Acceptance: FAIL**" in (out / "results/digest.md").read_text()
 
 
 def test_hub_manifest(capsys, repo_root):

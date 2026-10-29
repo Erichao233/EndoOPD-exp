@@ -81,11 +81,22 @@ The suite uses every GPU visible to the job: each vLLM unit is split into one
 shard per GPU and shards run in priority order. Runs are offline (no network,
 no W&B). A failed task is recorded and the others continue.
 
-Deliverables (relative to `--out`): `results/summary.json`, `results/report.md`,
-`results/items.jsonl.gz`, `results/env.json`, `logs/suite.log`.
+Deliverables (relative to `--out`):
 
-The pilot exits non-zero if any task fails; the full run exits non-zero only if
-setup failed or no model task finished.
+| file | content |
+|---|---|
+| `results/digest.md` | one page (under 20,000 characters) meant to be pasted into an issue: acceptance verdict, decision indicators, key tables |
+| `results/report.md` | all tables |
+| `results/summary.json` | every number, task states and errors; `acceptance` holds the verdict |
+| `results/items.jsonl.gz` | per-question predictions (public image ids, labels, option probabilities; no images) |
+| `results/env.json` | environment, package versions, model revisions, data index hash |
+| `logs/suite.log` | scheduler log |
+
+Acceptance passes when every task finished, the models put at least 80% of the
+next-token probability on the option letters in every condition, and vLLM agrees
+with HF (argmax agreement at least 90%, mean total variation at most 0.05). The
+pilot exits non-zero unless acceptance passes, so a failed pilot stops the full
+run; the full run exits non-zero only if setup failed or no model task finished.
 
 ## gpu-experiment-hub
 

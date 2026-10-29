@@ -13,17 +13,21 @@ import numpy as np
 
 from endoexp import manifest
 from endoexp.fields import FIELDS, KINDS
-from endoexp.io import read_jsonl, write_json, write_jsonl
+from endoexp.io import read_json, read_jsonl, write_json, write_jsonl
 from endoexp.metrics import clustered_bootstrap, fmt, summarize
 from endoexp.probe import ridge_probe
 
 # Option whose share should move under a manipulation if the model reads the artefact.
+# (manipulation, field) -> (option, sign). The shift is sign * (share answering ``option``
+# under the manipulation - share under the plain image), so a positive shift always means
+# the answers moved the way the artefact implies: inserting an artefact should raise the
+# option it suggests; removing overlays should lower "yes, there is text / an inset".
 SHIFT_TARGETS = {
-    ("insert_text_polyp", "abnormality"): "polyp",
-    ("insert_inset", "box_overlay"): "yes",
-    ("insert_inset", "procedure"): "colonoscopy",
-    ("clean", "text_overlay"): "yes",
-    ("clean", "box_overlay"): "yes",
+    ("insert_text_polyp", "abnormality"): ("polyp", 1),
+    ("insert_inset", "box_overlay"): ("yes", 1),
+    ("insert_inset", "procedure"): ("colonoscopy", 1),
+    ("clean", "text_overlay"): ("yes", -1),
+    ("clean", "box_overlay"): ("yes", -1),
 }
 MIN_PROBE_TRAIN, MIN_PROBE_TEST = 20, 10
 
@@ -96,11 +100,12 @@ def contrasts(scored: list[dict], seed: int = 0) -> list[dict]:
             "p_true_diff": clustered_bootstrap([_p_true(x) - _p_true(y) for x, y in pairs], groups, seed=seed),
             "flip_rate": float(np.mean([x["pred"] != y["pred"] for x, y in pairs])),
         }
-        target = SHIFT_TARGETS.get((a, name))
-        if target is not None:
-            entry["shift_target"] = target
+        if (a, name) in SHIFT_TARGETS:
+            target, sign = SHIFT_TARGETS[(a, name)]
+            entry["shift_target"] = f"{'+' if sign > 0 else '-'}{target}"
             entry["shift"] = clustered_bootstrap(
-                [float(x["pred"] == target) - float(y["pred"] == target) for x, y in pairs], groups, seed=seed)
+                [sign * (float(x["pred"] == target) - float(y["pred"] == target)) for x, y in pairs],
+                groups, seed=seed)
         table.append(entry)
     return table
 
@@ -406,12 +411,121 @@ def render(summary: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+COVERAGE_MIN, PARITY_AGREE_MIN, PARITY_TV_MAX = 0.8, 0.9, 0.05
+DIGEST_LIMIT = 20000   # characters; a GitHub comment holds 65,536
+
+
+def acceptance(summary: dict, work: Path | None = None) -> dict:
+    """Machine-checkable verdict for the run: tasks, letter coverage, vLLM/HF parity."""
+    tables = summary.get("tables", {})
+    tasks = summary.get("tasks", [])
+    coverage_min = min((r["mean"] for r in tables.get("coverage", [])), default=None)
+    parity_rows = tables.get("parity", [])
+    parity_ok = None if not parity_rows else all(
+        r["argmax_agree"] >= PARITY_AGREE_MIN and r["mean_tv"] <= PARITY_TV_MAX for r in parity_rows)
+    tokenizers = None
+    done = (work / "tasks" / "check-tokenizers" / "done.json") if work is not None else None
+    if done is not None and done.is_file():
+        tokenizers = read_json(done).get("all_match")
+    result = {
+        "tasks_total": len(tasks), "tasks_failed": [t["id"] for t in tasks if t["status"] != "done"],
+        "errors": len(summary.get("errors", [])), "letter_coverage_min": coverage_min,
+        "parity_ok": parity_ok, "tokenizers_match": tokenizers,
+        "thresholds": {"letter_coverage_min": COVERAGE_MIN, "parity_argmax_agree": PARITY_AGREE_MIN,
+                       "parity_mean_tv": PARITY_TV_MAX},
+    }
+    result["ok"] = (bool(tasks) and not result["tasks_failed"] and not result["errors"]
+                    and bool(tables.get("metrics"))
+                    and coverage_min is not None and coverage_min >= COVERAGE_MIN and parity_ok is not False)
+    return result
+
+
+def _verdict(check: dict | None) -> list[str]:
+    if not check:
+        return ["**Acceptance: not computed** (analysis did not finish; see the errors below)."]
+    lines = [f"**Acceptance: {'PASS' if check['ok'] else 'FAIL'}**", "",
+             f"- tasks: {check['tasks_total'] - len(check['tasks_failed'])}/{check['tasks_total']} done"
+             + (f"; failed: {', '.join(check['tasks_failed'])}" if check["tasks_failed"] else ""),
+             f"- probability on option letters, worst group: {fmt(check['letter_coverage_min'])}% "
+             f"(needs ≥ {fmt(COVERAGE_MIN, 0)}%)",
+             f"- vLLM vs HF parity: {'ok' if check['parity_ok'] else 'not run' if check['parity_ok'] is None else 'FAILED'}",
+             f"- tokenizers identical across models: "
+             f"{'yes' if check['tokenizers_match'] else 'not checked' if check['tokenizers_match'] is None else 'NO'}",
+             f"- suite errors: {check['errors']}"]
+    return lines
+
+
+def render_digest(summary: dict) -> str:
+    """One page meant to be pasted into the hub issue: verdict, indicators, key tables."""
+    t = summary.get("tables", {})
+    roles = summary.get("roles", {})
+    student = next((m for m, r in roles.items() if r == "student"), None)
+    others = [m for m, r in roles.items() if r != "student"]
+    head = [f"# {summary.get('suite')} digest ({'pilot' if summary.get('pilot') else 'full run'})", "",
+            f"Commit `{summary.get('code_commit')}`; GPUs {summary.get('gpus')}; "
+            f"{summary.get('started')} → {summary.get('finished')}. Percentages; 95% intervals resample image groups.",
+            ""] + _verdict(summary.get("acceptance"))
+    for task in summary.get("tasks", []):
+        if task["status"] != "done":
+            last = ((task.get("error") or "").strip().splitlines() or [""])[-1][:160]
+            head.append(f"  - {task['id']}: {last}")
+    for error in summary.get("errors", [])[:2]:
+        head += ["", "```", error.strip()[-800:], "```"]
+    sections = [head]
+    found = indicators(t)
+    if found:
+        sections.append(["## Decision indicators", ""] + found)
+    e1 = {(r["model"], r["condition"], r["field"]): r for r in t.get("metrics", []) if r["exp"] == "e1"}
+    prior = {r["field"]: r for r in t.get("priors", [])}
+    models = [m for m in [student] + others if m and any(k[0] == m for k in e1)]
+    names = sorted({k[2] for k in e1 if FIELDS[k[2]].kind in ("descriptor", "impression")}, key=_field_order)
+    if names and models:
+        rows = [[name, str(e1.get((models[0], "normal", name), {}).get("n", 0)), fmt(prior.get(name, {}).get("acc"))]
+                + [f"{fmt(e1.get((m, 'normal', name), {}).get('acc'))} / {fmt(e1.get((m, 'shuffled', name), {}).get('acc'))}"
+                   for m in models] for name in names]
+        sections.append(["## E1 descriptor and impression fields: accuracy, real image / shuffled image", ""]
+                        + _table(["field", "n", "dev prior"] + models, rows))
+    tvs = [r for r in t.get("teacher_vs_student", []) if r["kind"] in ("descriptor", "impression")]
+    if tvs:
+        sections.append(["## E1 teacher minus student (points)", ""]
+                        + _table(["teacher", "field", "accuracy", "image-specific gain"],
+                                 [[r["teacher"], r["field"], _ci(r["acc_diff"]), _ci(r["image_gain_diff"])]
+                                  for r in tvs]))
+    for exp, title, key in (
+            ("e2", "## E2 privileged view minus plain: accuracy (points)", "acc_diff"),
+            ("e4", "## E4 artefact manipulation: answers moving the way the artefact implies (points)", "shift")):
+        table = [r for r in t.get("contrasts", []) if r["exp"] == exp and key in r]
+        if not table:
+            continue
+        exp_models = [m for m in [student] + others if any(r["model"] == m for r in table)]
+        cells = defaultdict(dict)
+        for r in table:
+            cells[(r["a"], r["field"])][r["model"]] = _ci(r[key])
+        rows = [[view, name] + [cells[(view, name)].get(m, "–") for m in exp_models]
+                for view, name in sorted(cells, key=lambda k: (k[0], _field_order(k[1])))]
+        sections.append([title, ""] + _table(["view", "field"] + exp_models, rows))
+    best = {k: v for k, v in _best_probes(t.get("probes", [])).items()
+            if FIELDS[k[1]].kind in ("descriptor", "impression")}
+    if best:
+        rows = [[model, name, fmt(r["acc"]), fmt(r["majority_acc"]), fmt(r.get("probe_acc_paired")),
+                 fmt(r.get("answer_acc_paired"))]
+                for (model, name), r in sorted(best.items(), key=lambda kv: (kv[0][0], _field_order(kv[0][1])))]
+        sections.append(["## E3 linear probe vs the model's own answer", ""]
+                        + _table(["model", "field", "probe", "majority", "probe (paired)", "answer (paired)"], rows))
+    tail = ["", "Full tables: `results/report.md`; every number: `results/summary.json`."]
+    while len(sections) > 1 and len("\n\n".join("\n".join(s) for s in sections)) + 200 > DIGEST_LIMIT:
+        sections.pop()
+        tail.insert(0, "(Digest shortened to fit an issue comment.)")
+    return "\n\n".join("\n".join(s) for s in sections) + "\n" + "\n".join(tail) + "\n"
+
+
 def write_minimal(out: Path, summary: dict) -> None:
     results = Path(out) / "results"
     write_json(results / "summary.json", summary)
     if not (results / "items.jsonl.gz").exists():
         write_jsonl(results / "items.jsonl.gz", [])
     (results / "report.md").write_text(render(summary), encoding="utf-8")
+    (results / "digest.md").write_text(render_digest(summary), encoding="utf-8")
     if not (results / "env.json").exists():
         write_json(results / "env.json", {"error": "environment report was not written"})
 
@@ -437,5 +551,6 @@ def run(out: str | Path, summary: dict) -> None:
         "parity": parity(scored),
         "coverage": coverage(scored),
     }
+    summary["acceptance"] = acceptance(summary, work)
     write_jsonl(results / "items.jsonl.gz", rows)
     write_minimal(out, summary)

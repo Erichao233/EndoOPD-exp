@@ -9,7 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODELS = "configs/models.toml"
-DELIVERABLES = ["results/summary.json", "results/report.md", "results/items.jsonl.gz",
+DELIVERABLES = ["results/digest.md", "results/report.md", "results/summary.json", "results/items.jsonl.gz",
                 "results/env.json", "logs/suite.log"]
 REPOSITORY = "https://github.com/Erichao233/EndoOPD-exp"
 
